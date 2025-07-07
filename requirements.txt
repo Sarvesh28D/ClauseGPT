@@ -1,0 +1,8 @@
+# requirements.txt for Legal RAG App
+streamlit
+pymupdf
+langchain
+google-generativeai
+faiss-cpu
+dotenv
+sentence-transformers
