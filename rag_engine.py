@@ -11,6 +11,8 @@ import numpy as np
 from dotenv import load_dotenv
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
+import time
+import torch
 
 load_dotenv()
 
@@ -33,30 +35,56 @@ class RAGEngine:
         self.chunks = []
         self.embeddings = None
         self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        # Use GPU if available
+        if torch.cuda.is_available():
+            self.embedder = self.embedder.to('cuda')
 
-    def parse_pdf(self, pdf_file):
-        try:
-            doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-            text = "\n".join(page.get_text() for page in doc)
-            if not text.strip():
-                raise ValueError("PDF is empty or could not be parsed.")
-            return text
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse PDF: {e}")
+    @staticmethod
+    def _log_time(label, start):
+        print(f"{label} took {time.time() - start:.2f} seconds")
 
-    def chunk_text(self, text):
-        return self.text_splitter.split_text(text)
+    @staticmethod
+    def _cache_embed_chunks(embedder, chunks):
+        # Use batching for speed
+        return np.array(embedder.encode(chunks, batch_size=32, show_progress_bar=False))
 
     def embed_chunks(self, chunks):
-        embeddings = self.embedder.encode(chunks, show_progress_bar=False)
-        return np.array(embeddings)
+        import streamlit as st
+        start = time.time()
+        @st.cache_resource(show_spinner=False, hash_funcs={SentenceTransformer: id})
+        def cached_embed(embedder, chunks):
+            return self._cache_embed_chunks(embedder, chunks)
+        result = cached_embed(self.embedder, tuple(chunks))
+        self._log_time('Embedding', start)
+        return result
 
     def build_vector_store(self, chunks):
+        import streamlit as st
+        start = time.time()
         self.chunks = chunks
         self.embeddings = self.embed_chunks(chunks)
         dim = self.embeddings.shape[1]
         self.index = faiss.IndexFlatL2(dim)
         self.index.add(self.embeddings)
+        self._log_time('Vector store build', start)
+
+    def chunk_text(self, text):
+        start = time.time()
+        result = self.text_splitter.split_text(text)
+        self._log_time('Chunking', start)
+        return result
+
+    def parse_pdf(self, pdf_file):
+        start = time.time()
+        try:
+            doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+            text = "\n".join(page.get_text() for page in doc)
+            if not text.strip():
+                raise ValueError("PDF is empty or could not be parsed.")
+            self._log_time('PDF parsing', start)
+            return text
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse PDF: {e}")
 
     def retrieve(self, query):
         if self.index is None:
